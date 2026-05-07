@@ -1,0 +1,10 @@
+{
+  "lint": {
+    "LocalShadow": false,
+    "DuplicateLocal": false
+  },
+  "aliases": {
+    "defin": "./Defin.luau",
+    "types": "./Types.luau"
+  }
+}
