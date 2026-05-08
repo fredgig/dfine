@@ -1,460 +1,551 @@
 --!strict
 
+-- Vibecoded
+
 local fs = require("@lune/fs")
-
-local function getRootName(source: string): string?
-	-- New pattern: Defin.Classes.X.Constants = or Defin.Components.X.Constants =
-	local rootName = source:match("Defin%.[%a_][%w_]*%.([%a_][%w_]*)%.Constants%s*=")
-	if rootName then
-		return rootName
-	end
-
-	rootName = source:match("Defin%.[%a_][%w_]*%.([%a_][%w_]*)%.Properties%s*=")
-	if rootName then
-		return rootName
-	end
-
-	-- Fallback: legacy pattern X.Constants = or X.Properties =
-	rootName = source:match("([%a_][%w_]*)%.Constants%s*=")
-	if rootName and rootName ~= "Defin" then
-		return rootName
-	end
-
-	local fallback = source:match("([%a_][%w_]*)%.Properties%s*=")
-	if fallback and fallback ~= "Defin" then
-		return fallback
-	end
-
-	return nil
-end
-
-local function getLiteralForField(source: string, rootName: string, fieldName: string): string?
-	local newPattern = "Defin%.[%a_][%w_]*%." .. rootName .. "%." .. fieldName .. "%s*=%s*(%b{})"
-	local result = source:match(newPattern)
-	if result then
-		return result
-	end
-	local pattern = rootName .. "%." .. fieldName .. "%s*=%s*(%b{})"
-	return source:match(pattern)
-end
-
-local function getContainerTypeName(source: string, rootName: string): string
-	local newPattern = "Defin%.[%a_][%w_]*%." .. rootName .. "%.ContainerClassName%s*=%s*[\"']([%a_][%w_]*)[\"']"
-	local className = source:match(newPattern)
-	if not className then
-		local pattern = rootName .. "%.ContainerClassName%s*=%s*[\"']([%a_][%w_]*)[\"']"
-		className = source:match(pattern)
-	end
-
-	if className and className ~= "" then
-		return className
-	end
-
-	return "Folder"
-end
-
-local function normalizeLiteral(literal: string): string
-	return (literal:gsub("Defin%.Nil", "nil"))
-end
-
-local function getExtendedComponentNames(source: string, rootName: string): { string }
-	local names = {}
-	local seen: { [string]: boolean } = {}
-	local newPattern = "Defin%.[%a_][%w_]*%." .. rootName .. "%.Components%s*=%s*(%b{})"
-	local literal = source:match(newPattern)
-	if not literal then
-		local pattern = rootName .. "%.Components%s*=%s*(%b{})"
-		literal = source:match(pattern)
-	end
-
-	if not literal then
-		return names
-	end
-
-	for componentName in literal:gmatch("[\"']([%a_][%w_]*)[\"']") do
-		if not seen[componentName] then
-			seen[componentName] = true
-			table.insert(names, componentName)
-		end
-	end
-
-	return names
-end
-
-local function buildTypeBlock(rootName: string, fieldName: string, literal: string, extendsTypeNames: { string }): { string }
-	local aliasName = rootName .. fieldName
-	local typeExpression = "typeof(" .. aliasName .. ")"
-
-	for _, extendsTypeName in ipairs(extendsTypeNames) do
-		typeExpression ..= " & " .. extendsTypeName
-	end
-
-	return {
-		"local " .. aliasName .. " = " .. literal,
-		"",
-		"export type " .. aliasName .. " = " .. typeExpression,
-		"",
-	}
-end
 
 local function trim(text: string): string
 	return text:match("^%s*(.-)%s*$") or ""
 end
 
-local function splitParams(params: string): { string }
-	local result = {}
-	for param in params:gmatch("[^,]+") do
-		table.insert(result, trim(param))
-	end
-	return result
-end
+type DFineBlock = {
+	varName: string?,
+	block: string,
+}
 
-local function isSelfParam(param: string): boolean
-	local name = trim(param:match("^([^:]+)") or param)
-	return name == "self"
-end
-
-local function toFunctionTypeParams(selfTypeName: string, params: string, omitFirstParam: boolean?, prependParam: string?): string
-	local functionParams = { "self: " .. selfTypeName }
-	if prependParam then
-		table.insert(functionParams, prependParam)
-	end
-	local split = splitParams(params)
-	if #split > 0 and isSelfParam(split[1]) then
-		table.remove(split, 1)
-	end
-	local startIndex = (omitFirstParam and 2) or 1
-
-	for index = startIndex, #split do
-		local param = split[index]
-		if param ~= "" then
-			if param == "..." then
-				table.insert(functionParams, "...any")
-			elseif param:find(":", 1, true) then
-				table.insert(functionParams, param)
-			else
-				table.insert(functionParams, param .. ": any")
-			end
-		end
-	end
-
-	return table.concat(functionParams, ", ")
-end
-
-local function startsWith(value: string, prefix: string): boolean
-	return value:sub(1, #prefix) == prefix
-end
-
-local function getReturnTypeOrAny(returnTypeText: string?): string
-	if not returnTypeText then
-		return "any"
-	end
-
-	local withoutComment = (returnTypeText:match("^(.-)%s*%-%-") or returnTypeText)
-	local returnType = trim(withoutComment)
-
-	if returnType == "" then
-		return "any"
-	end
-
-	return returnType
-end
-
-local function addMethodSignature(methodSignatures: { [string]: { string } }, methodName: string, signature: string)
-	local signatures = methodSignatures[methodName]
-	if not signatures then
-		signatures = {}
-		methodSignatures[methodName] = signatures
-	end
-
-	if not table.find(signatures, signature) then
-		table.insert(signatures, signature)
-	end
-end
-
-local function getGeneratedMethodName(rootName: string, scopedRoot: string, methodName: string): string
-	if scopedRoot == rootName .. ".Server.Request" then
-		return "Request" .. methodName
-	end
-
-	return methodName
-end
-
-local function isClientScope(rootName: string, scopedRoot: string): boolean
-	return scopedRoot == rootName .. ".Client" or startsWith(scopedRoot, rootName .. ".Client.")
-end
-
-local function isServerScope(rootName: string, scopedRoot: string): boolean
-	return scopedRoot == rootName .. ".Server" or startsWith(scopedRoot, rootName .. ".Server.")
-end
-
-local function extractMethodSignatures(source: string, rootName: string): ({ [string]: { string } }, { [string]: { string } }, { [string]: { string } })
-	local rootMethods: { [string]: { string } } = {}
-	local clientMethods: { [string]: { string } } = {}
-	local serverMethods: { [string]: { string } } = {}
-	local rootSelfType = rootName
-	local clientSelfType = rootName .. "Client"
-	local serverSelfType = rootName .. "Server"
-
-	for line in source:gmatch("[^\r\n]+") do
-		local scopedRoot, methodName, params, returnTypeText =
-			line:match("^%s*function%s+([%a_][%w_%.]*):([%a_][%w_]*)%s*%((.-)%)%s*:%s*(.-)%s*$")
-
-		if not scopedRoot then
-			scopedRoot, methodName, params =
-				line:match("^%s*function%s+([%a_][%w_%.]*):([%a_][%w_]*)%s*%((.-)%)%s*$")
-			returnTypeText = nil
-		end
-
-		-- Normalize: strip Defin.Classes.X or Defin.Components.X prefix, keeping X.Rest
-		if scopedRoot then
-			scopedRoot = scopedRoot:match("^Defin%.[%a_][%w_]*%.(.+)$") or scopedRoot
-		end
-
-		if scopedRoot and methodName and params and (scopedRoot == rootName or startsWith(scopedRoot, rootName .. ".")) then
-			local isChangedScope = scopedRoot == rootName .. ".Changed"
-				or scopedRoot == rootName .. ".Client.Changed"
-				or scopedRoot == rootName .. ".Server.Changed"
-
-			if isChangedScope then
-				continue
-			end
-
-			local returnType = getReturnTypeOrAny(returnTypeText)
-			local inClientScope = isClientScope(rootName, scopedRoot)
-			local inServerScope = isServerScope(rootName, scopedRoot)
-			local inSharedScope = scopedRoot == rootName
-
-			if scopedRoot == rootName .. ".Client.Replicate" then
-				local replicateSignature = "(" .. toFunctionTypeParams(serverSelfType, params, false) .. ") -> " .. returnType
-				addMethodSignature(serverMethods, "Replicate" .. methodName, replicateSignature)
-
-				local replicatePlayerSignature = "(" .. toFunctionTypeParams(serverSelfType, params, false, "player: Player") .. ") -> " .. returnType
-				addMethodSignature(serverMethods, "ReplicatePlayer" .. methodName, replicatePlayerSignature)
-			else
-				local omitFirstParam = scopedRoot == rootName .. ".Server.Request"
-				local generatedName = getGeneratedMethodName(rootName, scopedRoot, methodName)
-
-				if inSharedScope then
-					local rootSignature = "(" .. toFunctionTypeParams(rootSelfType, params, omitFirstParam) .. ") -> " .. returnType
-					addMethodSignature(rootMethods, generatedName, rootSignature)
-				end
-
-				if scopedRoot == rootName .. ".Server.Request" then
-					local clientSignature = "(" .. toFunctionTypeParams(clientSelfType, params, true) .. ") -> " .. returnType
-					addMethodSignature(clientMethods, generatedName, clientSignature)
-				elseif inClientScope or inSharedScope then
-					local clientSignature = "(" .. toFunctionTypeParams(clientSelfType, params, omitFirstParam) .. ") -> " .. returnType
-					addMethodSignature(clientMethods, generatedName, clientSignature)
-				end
-
-				if scopedRoot ~= rootName .. ".Server.Request" and (inServerScope or inSharedScope) then
-					local serverSignature = "(" .. toFunctionTypeParams(serverSelfType, params, omitFirstParam) .. ") -> " .. returnType
-					addMethodSignature(serverMethods, generatedName, serverSignature)
-				end
-			end
-		end
-	end
-
-	return rootMethods, clientMethods, serverMethods
-end
-
-local function buildMethodsTypeBlock(typeName: string, methodSignatures: { [string]: { string } }, extendsTypeNames: { string }): { string }
-	local lines = {
-		"export type " .. typeName .. " = {",
-	}
-
-	local names = {}
-	for methodName in pairs(methodSignatures) do
-		table.insert(names, methodName)
-	end
-	table.sort(names)
-
-	for _, methodName in ipairs(names) do
-		local signatures = methodSignatures[methodName]
-		for index, signature in ipairs(signatures) do
-			signatures[index] = "(" .. signature .. ")"
-		end
-		local combined = table.concat(signatures, " & ")
-		table.insert(lines, "\t" .. methodName .. ": " .. combined .. ",")
-	end
-
-	local suffix = ""
-	for _, extendsTypeName in ipairs(extendsTypeNames) do
-		suffix ..= " & " .. extendsTypeName
-	end
-
-	table.insert(lines, "}" .. suffix)
-	table.insert(lines, "")
-
-	return lines
-end
-
-local function getBalanceDelta(text: string): number
-	local opens = 0
-	local closes = 0
-
-	for _ in text:gmatch("{") do
-		opens += 1
-	end
-	for _ in text:gmatch("%(") do
-		opens += 1
-	end
-	for _ in text:gmatch("%[") do
-		opens += 1
-	end
-
-	for _ in text:gmatch("}") do
-		closes += 1
-	end
-	for _ in text:gmatch("%)") do
-		closes += 1
-	end
-	for _ in text:gmatch("%]") do
-		closes += 1
-	end
-
-	return opens - closes
-end
-
-local function extractDeclaredTypes(source: string): { [string]: string }
-	local declared: { [string]: string } = {}
-	local lines = {}
-
+-- Returns every D.fine({…}) call in source, with the assigned variable name if any.
+local function extractDFineBlocks(source: string): { DFineBlock }
+	local blocks: { DFineBlock } = {}
+	local lines: { string } = {}
 	for line in source:gmatch("[^\r\n]+") do
 		table.insert(lines, line)
 	end
 
-	local index = 1
-	while index <= #lines do
-		local line = lines[index]
-		local name, rhs = line:match("^%s*export%s+type%s+([%a_][%w_]*)%s*=%s*(.*)%s*$")
-		if not name then
-			name, rhs = line:match("^%s*type%s+([%a_][%w_]*)%s*=%s*(.*)%s*$")
-		end
+	local i = 1
+	while i <= #lines do
+		local line = lines[i]
+		-- Capture optional: local VarName = D.fine<<Type>>({ or D.fine({
+		local varName = line:match("local%s+([%a_][%w_]*)%s*=.*D%.fine")
+		if line:match("D%.fine%s*%b<>%s*%(") or line:match("D%.fine%s*%(") or line:match("D%.fine%s*<[^>]*>%s*%(") or line:match("D%.fine%s*%b<>%s*{") or line:match("D%.fine%s*{") then
+			local collecting = false
+			local depth = 0
+			local collected: { string } = {}
 
-		if name and rhs ~= nil then
-			local parts = { rhs }
-			local balance = getBalanceDelta(rhs)
-			local nextIndex = index + 1
-
-			while nextIndex <= #lines and (balance > 0 or trim(parts[#parts]) == "") do
-				local nextLine = lines[nextIndex]
-				table.insert(parts, nextLine)
-				balance += getBalanceDelta(nextLine)
-				nextIndex += 1
+			for j = i, #lines do
+				local l = lines[j]
+				if not collecting then
+					if l:find("{") then
+						collecting = true
+						for _ in l:gmatch("{") do
+							depth += 1
+						end
+						for _ in l:gmatch("}") do
+							depth -= 1
+						end
+						table.insert(collected, l)
+						if depth <= 0 then
+							i = j + 1
+							break
+						end
+					end
+				else
+					for _ in l:gmatch("{") do
+						depth += 1
+					end
+					for _ in l:gmatch("}") do
+						depth -= 1
+					end
+					table.insert(collected, l)
+					if depth <= 0 then
+						i = j + 1
+						break
+					end
+				end
 			end
 
-			if balance <= 0 then
-				declared[name] = trim(table.concat(parts, "\n"))
+			if #collected > 0 then
+				local blockStr = table.concat(collected, "\n")
+				local inner = blockStr:match("(%b{})")
+				if inner then
+					table.insert(blocks, { varName = varName, block = inner })
+				end
 			end
-
-			index = nextIndex
 		else
-			index += 1
+			i += 1
 		end
 	end
 
-	return declared
+	return blocks
 end
 
-local function generateTypesForFile(inputPath: string, knownRootNames: { [string]: boolean }): ({ string }?, string)
-	local source = fs.readFile(inputPath)
+local function getRootName(block: string): string?
+	return block:match("Name%s*=%s*[\"']([%a_][%w_]*)[\"']")
+end
 
-	local rootName = getRootName(source)
+-- Extracts the { ... } literal for a given top-level field inside a D.fine({...}) call.
+-- Handles nested braces correctly using line-by-line depth tracking.
+local function extractFieldBlock(source: string, fieldName: string): string?
+	local lines = {}
+	for line in source:gmatch("[^\r\n]+") do
+		table.insert(lines, line)
+	end
+
+	local collecting = false
+	local depth = 0
+	local collected: { string } = {}
+
+	for _, line in ipairs(lines) do
+		if not collecting then
+			if line:match("^%s*" .. fieldName .. "%s*=%s*{") then
+				collecting = true
+				depth = 0
+				for _ in line:gmatch("{") do
+					depth += 1
+				end
+				for _ in line:gmatch("}") do
+					depth -= 1
+				end
+				table.insert(collected, line)
+				if depth <= 0 then
+					collecting = false
+				end
+			end
+		else
+			for _ in line:gmatch("{") do
+				depth += 1
+			end
+			for _ in line:gmatch("}") do
+				depth -= 1
+			end
+			table.insert(collected, line)
+			if depth <= 0 then
+				collecting = false
+				break
+			end
+		end
+	end
+
+	if #collected == 0 then
+		return nil
+	end
+
+	local joined = table.concat(collected, "\n")
+	return joined:match("(%b{})")
+end
+
+local SKIP_KEYS: { [string]: boolean } = {
+	Name = true,
+	Container = true,
+	Extends = true,
+}
+
+local function isSelfParam(param: string): boolean
+	return trim(param:match("^([^:]+)") or param) == "self"
+end
+
+-- Builds a typed param list, replacing bare param names with `: any` and
+-- replacing the leading `self` with `self: <selfType>`.
+local function buildTypedParams(selfType: string, rawParams: string): string
+	local parts = { "self: " .. selfType }
+	for param in rawParams:gmatch("[^,]+") do
+		local p = trim(param)
+		if p == "" or isSelfParam(p) then
+			continue
+		elseif p == "..." then
+			table.insert(parts, "...any")
+		elseif p:find(":", 1, true) then
+			table.insert(parts, p)
+		else
+			table.insert(parts, p .. ": any")
+		end
+	end
+	return table.concat(parts, ", ")
+end
+
+type MethodBuckets = {
+	shared: { [string]: MethodInfo },
+	server: { [string]: MethodInfo },
+	client: { [string]: MethodInfo },
+}
+
+-- Splits methods into shared (no prefix), Server_ and Client_ buckets.
+-- Shared methods are included in all three scopes.
+local function extractMethods(source: string): MethodBuckets
+	local shared: { [string]: MethodInfo } = {}
+	local server: { [string]: MethodInfo } = {}
+	local client: { [string]: MethodInfo } = {}
+
+	for line in source:gmatch("[^\r\n]+") do
+		local name, params, ret = line:match("^%s*([%a_][%w_]*)%s*=%s*function%s*%((.-)%)%s*:%s*(.-)%s*$")
+		if not name then
+			name, params = line:match("^%s*([%a_][%w_]*)%s*=%s*function%s*%((.-)%)%s*$")
+			ret = nil
+		end
+
+		if name and params and not SKIP_KEYS[name] then
+			local returnType = (ret and trim(ret) ~= "") and trim(ret) or "()"
+			local serverName = name:match("^Server_(.+)$")
+			local clientName = name:match("^Client_(.+)$")
+			if serverName then
+				server[serverName] = { params = params, returnType = returnType }
+			elseif clientName then
+				client[clientName] = { params = params, returnType = returnType }
+			else
+				-- Shared: only in shared bucket; Client/Server inherit via composite type
+				shared[name] = { params = params, returnType = returnType }
+			end
+		end
+	end
+
+	return { shared = shared, server = server, client = client }
+end
+
+-- Parses the variable names listed in Extends = { VarA, VarB }
+local function extractExtendsVarNames(block: string): { string }
+	local varNames: { string } = {}
+	local extendsBlock = extractFieldBlock(block, "Extends")
+	if not extendsBlock then
+		return varNames
+	end
+	for varName in extendsBlock:gmatch("[%a_][%w_]*") do
+		table.insert(varNames, varName)
+	end
+	return varNames
+end
+
+-- Returns the names of keys at depth-1 of a table literal (non-recursive).
+local function getTopLevelKeys(literal: string): { string }
+	local keys: { string } = {}
+	local depth = 0
+	for line in literal:gmatch("[^\r\n]+") do
+		if depth == 1 then
+			local key = line:match("^%s*([%a_][%w_]*)%s*=")
+			if key then
+				table.insert(keys, key)
+			end
+		end
+		for _ in line:gmatch("{") do
+			depth += 1
+		end
+		for _ in line:gmatch("}") do
+			depth -= 1
+		end
+	end
+	return keys
+end
+
+-- Extracts root-level non-function, non-reserved fields from a D.fine block as a { ... } literal.
+local function extractRootPropertyLiteral(block: string): string
+	local lines: { string } = {}
+	for line in block:gmatch("[^\r\n]+") do
+		table.insert(lines, line)
+	end
+
+	local propLines: { string } = {}
+	local i = 2 -- skip first line (opening `{`)
+
+	while i <= #lines - 1 do -- skip last line (closing `}`)
+		local line = lines[i]
+		local key = line:match("^%s*([%a_][%w_]*)%s*=")
+
+		if not key then
+			i += 1
+			continue
+		end
+
+		local isReserved = SKIP_KEYS[key]
+		local isFunc = line:match("^%s*[%a_][%w_]*%s*=%s*function")
+
+		if isFunc then
+			-- Skip function body by tracking block keyword depth
+			local depth = 1
+			i += 1
+			while i <= #lines and depth > 0 do
+				local l = lines[i]
+				for _ in l:gmatch("%f[%a]function%f[%A]") do
+					depth += 1
+				end
+				for _ in l:gmatch("%f[%a]if%f[%A]") do
+					depth += 1
+				end
+				for _ in l:gmatch("%f[%a]for%f[%A]") do
+					depth += 1
+				end
+				for _ in l:gmatch("%f[%a]while%f[%A]") do
+					depth += 1
+				end
+				for _ in l:gmatch("%f[%a]do%f[%A]") do
+					depth += 1
+				end
+				for _ in l:gmatch("%f[%a]end%f[%A]") do
+					depth -= 1
+				end
+				i += 1
+			end
+		elseif isReserved then
+			-- Skip reserved entry (handles multi-line table values via brace tracking)
+			local braces = 0
+			for _ in line:gmatch("{") do
+				braces += 1
+			end
+			for _ in line:gmatch("}") do
+				braces -= 1
+			end
+			i += 1
+			while i <= #lines and braces > 0 do
+				local l = lines[i]
+				for _ in l:gmatch("{") do
+					braces += 1
+				end
+				for _ in l:gmatch("}") do
+					braces -= 1
+				end
+				i += 1
+			end
+		else
+			-- Property: collect full entry (multi-line table values via brace tracking)
+			local entryLines: { string } = { line }
+			local braces = 0
+			for _ in line:gmatch("{") do
+				braces += 1
+			end
+			for _ in line:gmatch("}") do
+				braces -= 1
+			end
+			i += 1
+			while i <= #lines and braces > 0 do
+				local l = lines[i]
+				table.insert(entryLines, l)
+				for _ in l:gmatch("{") do
+					braces += 1
+				end
+				for _ in l:gmatch("}") do
+					braces -= 1
+				end
+				i += 1
+			end
+			for _, el in ipairs(entryLines) do
+				table.insert(propLines, el)
+			end
+		end
+	end
+
+	return #propLines > 0 and ("{\n" .. table.concat(propLines, "\n") .. "\n}") or "{}"
+end
+
+local function buildTypeBlock(rootName: string, fieldName: string, literal: string, extendsSuffix: string?): { string }
+	local aliasName = rootName .. fieldName
+	local typeExpr = "typeof(" .. aliasName .. ")"
+	if extendsSuffix and extendsSuffix ~= "" then
+		typeExpr ..= " & " .. extendsSuffix
+	end
+	return {
+		"local " .. aliasName .. " = " .. literal,
+		"",
+		"export type " .. aliasName .. " = " .. typeExpr,
+		"",
+	}
+end
+
+local function buildMethodsTypeBlock(typeName: string, selfType: string, methods: { [string]: MethodInfo }, extendsSuffix: string?): { string }
+	local lines = { "export type " .. typeName .. " = {" }
+
+	local names: { string } = {}
+	for name in pairs(methods) do
+		table.insert(names, name)
+	end
+	table.sort(names)
+
+	for _, name in ipairs(names) do
+		local info = methods[name]
+		local typedParams = buildTypedParams(selfType, info.params)
+		table.insert(lines, "\t" .. name .. ": (" .. typedParams .. ") -> " .. info.returnType .. ",")
+	end
+
+	local suffix = (extendsSuffix and extendsSuffix ~= "") and (" & " .. extendsSuffix) or ""
+	table.insert(lines, "}" .. suffix)
+	table.insert(lines, "")
+	return lines
+end
+
+local function buildConfigTypeBlock(rootName: string, buckets: MethodBuckets, propNames: { string }): { string }
+	local lines = {
+		"export type " .. rootName .. "Config = {",
+		"\tName: string,",
+		"\tContainer: Instance?,",
+		"\tExtends: { any }?,",
+	}
+	for _, propName in ipairs(propNames) do
+		table.insert(lines, "\t" .. propName .. ": any?,")
+	end
+
+	type ConfigMethod = { key: string, selfType: string, info: MethodInfo }
+	local configMethods: { ConfigMethod } = {}
+
+	local sharedNames: { string } = {}
+	for name in pairs(buckets.shared) do
+		table.insert(sharedNames, name)
+	end
+	table.sort(sharedNames)
+	for _, name in ipairs(sharedNames) do
+		table.insert(configMethods, { key = name, selfType = rootName, info = buckets.shared[name] })
+	end
+
+	local serverNames: { string } = {}
+	for name in pairs(buckets.server) do
+		table.insert(serverNames, name)
+	end
+	table.sort(serverNames)
+	for _, name in ipairs(serverNames) do
+		table.insert(configMethods, { key = "Server_" .. name, selfType = rootName .. "Server", info = buckets.server[name] })
+	end
+
+	local clientNames: { string } = {}
+	for name in pairs(buckets.client) do
+		table.insert(clientNames, name)
+	end
+	table.sort(clientNames)
+	for _, name in ipairs(clientNames) do
+		table.insert(configMethods, { key = "Client_" .. name, selfType = rootName .. "Client", info = buckets.client[name] })
+	end
+
+	for _, entry in ipairs(configMethods) do
+		local typedParams = buildTypedParams(entry.selfType, entry.info.params)
+		table.insert(lines, "\t" .. entry.key .. ": ((" .. typedParams .. ") -> " .. entry.info.returnType .. ")?,")
+	end
+
+	table.insert(lines, "}")
+	table.insert(lines, "")
+	return lines
+end
+
+local function getContainerTypeName(block: string): string
+	-- Explicit: ContainerClassName = "Model"
+	local className = block:match("ContainerClassName%s*=%s*[\"']([%a_][%w_]*)[\"']")
+	if className and className ~= "" then
+		return className
+	end
+	-- Inline: Container = Instance.new("Model")
+	className = block:match("Container%s*=%s*Instance%.new%(%s*[\"']([%a_][%w_]*)[\"']%s*%)")
+	return (className and className ~= "") and className or "Folder"
+end
+
+local function generateTypesForEntity(block: string, varToEntity: { [string]: string }): ({ string }?, string)
+	local rootName = getRootName(block)
 	if not rootName then
-		return nil, "Could not find `<Name>.Constants` or `<Name>.Properties` in " .. inputPath
+		return nil, "Could not find `Name = '...'`"
 	end
 
-	local constantsLiteral = getLiteralForField(source, rootName, "Constants")
-	local propertiesLiteral = getLiteralForField(source, rootName, "Properties")
-	local containerTypeName = getContainerTypeName(source, rootName)
-	local extendedComponentNames = getExtendedComponentNames(source, rootName)
-	local resolvedExtendedComponents = {}
+	local propertiesLiteral = extractRootPropertyLiteral(block)
+	local buckets = extractMethods(block)
 
-	for _, componentName in ipairs(extendedComponentNames) do
-		if componentName ~= rootName and knownRootNames[componentName] then
-			table.insert(resolvedExtendedComponents, componentName)
+	-- Skip entities with no meaningful content
+	local hasProperties = propertiesLiteral ~= "{}"
+	local hasMethods = next(buckets.shared) ~= nil or next(buckets.server) ~= nil or next(buckets.client) ~= nil
+	if not hasProperties and not hasMethods then
+		local extendsVars = extractExtendsVarNames(block)
+		if #extendsVars == 0 then
+			return nil, "No Properties or Methods found for " .. rootName
 		end
 	end
 
-	table.sort(resolvedExtendedComponents)
-
-	local extendedConstants = {}
-	local extendedProperties = {}
-	local extendedMethods = {}
-	local extendedClientMethods = {}
-	local extendedServerMethods = {}
-
-	for _, componentName in ipairs(resolvedExtendedComponents) do
-		table.insert(extendedConstants, componentName .. "Constants")
-		table.insert(extendedProperties, componentName .. "Properties")
-		table.insert(extendedMethods, componentName .. "Methods")
-		table.insert(extendedClientMethods, componentName .. "ClientMethods")
-		table.insert(extendedServerMethods, componentName .. "ServerMethods")
-	end
-
-	if not constantsLiteral then
-		return nil, "Could not find `" .. rootName .. ".Constants = { ... }` in " .. inputPath
-	end
-
-	if not propertiesLiteral then
-		return nil, "Could not find `" .. rootName .. ".Properties = { ... }` in " .. inputPath
-	end
-
-	constantsLiteral = normalizeLiteral(constantsLiteral)
-	propertiesLiteral = normalizeLiteral(propertiesLiteral)
-	local methodSignatures, clientMethodSignatures, serverMethodSignatures = extractMethodSignatures(source, rootName)
-	local declaredTypes = extractDeclaredTypes(source)
-
-	local generatedLines = {}
-
-	for _, line in ipairs(buildTypeBlock(rootName, "Constants", constantsLiteral, extendedConstants)) do
-		table.insert(generatedLines, line)
-	end
-
-	for _, line in ipairs(buildTypeBlock(rootName, "Properties", propertiesLiteral, extendedProperties)) do
-		table.insert(generatedLines, line)
-	end
-
-	for _, line in ipairs(buildMethodsTypeBlock(rootName .. "Methods", methodSignatures, extendedMethods)) do
-		table.insert(generatedLines, line)
-	end
-
-	for _, line in ipairs(buildMethodsTypeBlock(rootName .. "ClientMethods", clientMethodSignatures, extendedClientMethods)) do
-		table.insert(generatedLines, line)
-	end
-
-	for _, line in ipairs(buildMethodsTypeBlock(rootName .. "ServerMethods", serverMethodSignatures, extendedServerMethods)) do
-		table.insert(generatedLines, line)
-	end
-
-	local declaredTypeNames = {}
-	for typeName in pairs(declaredTypes) do
-		if typeName ~= (rootName .. "Constants") and typeName ~= (rootName .. "Properties") and typeName ~= (rootName .. "Methods") and typeName ~= (rootName .. "ClientMethods") and typeName ~= (rootName .. "ServerMethods") and typeName ~= rootName then
-			table.insert(declaredTypeNames, typeName)
+	-- Resolve Extends var names to entity names
+	local extendsEntityNames: { string } = {}
+	for _, varName in ipairs(extractExtendsVarNames(block)) do
+		local entityName = varToEntity[varName]
+		if entityName and entityName ~= rootName then
+			table.insert(extendsEntityNames, entityName)
 		end
 	end
-	table.sort(declaredTypeNames)
 
-	for _, typeName in ipairs(declaredTypeNames) do
-		table.insert(generatedLines, "export type " .. typeName .. " = " .. declaredTypes[typeName])
-		table.insert(generatedLines, "")
+	local function joinSuffix(suffix: string): string?
+		if #extendsEntityNames == 0 then
+			return nil
+		end
+		local parts: { string } = {}
+		for _, name in ipairs(extendsEntityNames) do
+			table.insert(parts, name .. suffix)
+		end
+		return table.concat(parts, " & ")
 	end
 
-	table.insert(generatedLines, "export type " .. rootName .. " = " .. rootName .. "Constants & " .. rootName .. "Properties & " .. rootName .. "Methods & " .. containerTypeName)
+	local containerType = getContainerTypeName(block)
+	local propNames = getTopLevelKeys(propertiesLiteral)
+
+	local generatedLines: { string } = {}
+
+	for _, line in ipairs(buildTypeBlock(rootName, "Properties", propertiesLiteral, joinSuffix("Properties"))) do
+		table.insert(generatedLines, line)
+	end
+
+	for _, line in ipairs(buildMethodsTypeBlock(rootName .. "Methods", rootName, buckets.shared, joinSuffix("Methods"))) do
+		table.insert(generatedLines, line)
+	end
+
+	for _, line in ipairs(buildMethodsTypeBlock(rootName .. "ClientMethods", rootName .. "Client", buckets.client, joinSuffix("ClientMethods"))) do
+		table.insert(generatedLines, line)
+	end
+
+	for _, line in ipairs(buildMethodsTypeBlock(rootName .. "ServerMethods", rootName .. "Server", buckets.server, joinSuffix("ServerMethods"))) do
+		table.insert(generatedLines, line)
+	end
+
+	table.insert(generatedLines, "export type " .. rootName .. " = " .. rootName .. "Properties & " .. rootName .. "Methods & " .. containerType)
 	table.insert(generatedLines, "")
 	table.insert(generatedLines, "export type " .. rootName .. "Client = " .. rootName .. " & " .. rootName .. "ClientMethods")
 	table.insert(generatedLines, "")
 	table.insert(generatedLines, "export type " .. rootName .. "Server = " .. rootName .. " & " .. rootName .. "ServerMethods")
 	table.insert(generatedLines, "")
 
+	for _, line in ipairs(buildConfigTypeBlock(rootName, buckets, propNames)) do
+		table.insert(generatedLines, line)
+	end
+
 	return generatedLines, rootName
 end
 
+local function generateTypesForFile(inputPath: string): ({ string }?, string)
+	local source = fs.readFile(inputPath)
+	local dfineBlocks = extractDFineBlocks(source)
+
+	if #dfineBlocks == 0 then
+		return nil, "No D.fine({...}) calls found in " .. inputPath
+	end
+
+	-- Build varName -> entityName map for this file
+	local varToEntity: { [string]: string } = {}
+	for _, entry in ipairs(dfineBlocks) do
+		local entityName = getRootName(entry.block)
+		if entry.varName and entityName then
+			varToEntity[entry.varName] = entityName
+		end
+	end
+
+	local allLines: { string } = {}
+	local names: { string } = {}
+
+	for _, entry in ipairs(dfineBlocks) do
+		local entityLines, nameOrErr = generateTypesForEntity(entry.block, varToEntity)
+		if entityLines then
+			table.insert(names, nameOrErr)
+			for _, line in ipairs(entityLines) do
+				table.insert(allLines, line)
+			end
+		else
+			print("  Skipped entity in " .. inputPath .. ": " .. nameOrErr)
+		end
+	end
+
+	if #names == 0 then
+		return nil, "No valid entities found in " .. inputPath
+	end
+
+	return allLines, table.concat(names, ", ")
+end
+
 local function findLuauFiles(dir: string): { string }
-	local files = {}
-	
+	local files: { string } = {}
+
 	if not fs.isDir(dir) then
 		return files
 	end
@@ -473,75 +564,42 @@ local function findLuauFiles(dir: string): { string }
 	return files
 end
 
--- Main execution
+-- ============================================================
+-- Main
+-- ============================================================
+
 local scriptsDir = "scripts"
 
 if not fs.isDir(scriptsDir) then
 	error("scripts folder not found")
 end
 
-local componentFiles = findLuauFiles(scriptsDir .. "/Components")
-local classFiles = findLuauFiles(scriptsDir .. "/Classes")
+local files = findLuauFiles(scriptsDir)
 
-if #componentFiles == 0 and #classFiles == 0 then
-	error("No .luau files found in scripts/Components or scripts/Classes")
-end
+table.sort(files)
 
-table.sort(componentFiles)
-table.sort(classFiles)
+local allGeneratedLines: { string } = {}
 
-local knownRootNames: { [string]: boolean } = {}
-for _, inputPath in ipairs(componentFiles) do
-	local source = fs.readFile(inputPath)
-	local rootName = getRootName(source)
-	if rootName then
-		knownRootNames[rootName] = true
-	end
-end
-for _, inputPath in ipairs(classFiles) do
-	local source = fs.readFile(inputPath)
-	local rootName = getRootName(source)
-	if rootName then
-		knownRootNames[rootName] = true
-	end
-end
 
-local allGeneratedLines = {
-}
+for _, inputPath in ipairs(files) do
+	local generatedLines, rootNameOrError = generateTypesForFile(inputPath)
 
-local function appendGroup(groupTitle: string, groupFiles: { string })
-	if #groupFiles == 0 then
-		return
-	end
+	if generatedLines then
+		table.insert(allGeneratedLines, "-- ----------------------------------------")
+		table.insert(allGeneratedLines, "-- Module: " .. rootNameOrError)
+		table.insert(allGeneratedLines, "-- Source: " .. inputPath)
+		table.insert(allGeneratedLines, "-- ----------------------------------------")
+		table.insert(allGeneratedLines, "")
 
-	table.insert(allGeneratedLines, "-- ========================================")
-	table.insert(allGeneratedLines, "-- " .. groupTitle)
-	table.insert(allGeneratedLines, "-- ========================================")
-	table.insert(allGeneratedLines, "")
-
-	for _, inputPath in ipairs(groupFiles) do
-		local generatedLines, rootNameOrError = generateTypesForFile(inputPath, knownRootNames)
-
-		if generatedLines then
-			table.insert(allGeneratedLines, "-- ----------------------------------------")
-			table.insert(allGeneratedLines, "-- Module: " .. rootNameOrError)
-			table.insert(allGeneratedLines, "-- Source: " .. inputPath)
-			table.insert(allGeneratedLines, "-- ----------------------------------------")
-			table.insert(allGeneratedLines, "")
-
-			for _, line in ipairs(generatedLines) do
-				table.insert(allGeneratedLines, line)
-			end
-
-			print("Included " .. inputPath .. " from " .. rootNameOrError)
-		else
-			print("Skipped " .. inputPath .. ": " .. rootNameOrError)
+		for _, line in ipairs(generatedLines) do
+			table.insert(allGeneratedLines, line)
 		end
+
+		print("Included " .. inputPath .. " (" .. rootNameOrError .. ")")
+	else
+		print("Skipped " .. inputPath .. ": " .. rootNameOrError)
 	end
 end
-
-appendGroup("COMPONENTS", componentFiles)
-appendGroup("CLASSES", classFiles)
 
 local outputPath = "Defin.luau"
 local existing = fs.readFile(outputPath)

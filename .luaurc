@@ -4,7 +4,6 @@
     "DuplicateLocal": false
   },
   "aliases": {
-    "defin": "./Defin.luau",
-    "defin2": "./Defin2.luau"
+    "defin": "./Defin.luau"
   }
 }
