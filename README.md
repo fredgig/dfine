@@ -20,11 +20,33 @@ This repo isn't the published framework; it's where the design and runtime are b
 `D.fine` takes a spec table and returns a frozen-ish "entity definition" that can be passed to `D.new` (or used as a parent via `D.Extends`).
 
 ```lua
-local TestEntity0 = D.fine {
-    [D.Name] = "Entity0",
+local Vehicle = D.fine {
+    [D.Name] = "Vehicle",
 
-    Client_SomeDeepClientMethod = function(self): string
-        return "Hello there"
+    Honk = function(self): string
+        return "Beep!"
+    end,
+}
+
+local Car = D.fine {
+    [D.Name] = "Car",
+    [D.Container] = Instance.new("Model"),
+    [D.Extends] = { Vehicle },
+
+    Color = "red",
+    TopSpeed = 120,
+    Owner = D.Nil :: Player?,
+
+    Drive = function(self, distance: number): string
+        return `drove {distance}m at {self.TopSpeed}km/h`
+    end,
+
+    Server_Refuel = function(self): string
+        return "tank full"
+    end,
+
+    Client_PlayHorn = function(self): string
+        return self:Honk()  -- inherited from Vehicle
     end,
 }
 ```
