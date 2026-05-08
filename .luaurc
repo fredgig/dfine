@@ -4,6 +4,7 @@
     "DuplicateLocal": false
   },
   "aliases": {
-    "defin": "./Defin.luau"
+    "defin": "./Defin",
+    "lune": "/Users/fgig/.lune/.typedefs/0.10.4/"
   }
 }

@@ -79,12 +79,13 @@ local function extractDFineBlocks(source: string): { DFineBlock }
 end
 
 local function getRootName(block: string): string?
-	return block:match("Name%s*=%s*[\"']([%a_][%w_]*)[\"']")
+	return block:match("%[D%.Name%]%s*=%s*[\"']([%a_][%w_]*)[\"']")
 end
 
 -- Extracts the { ... } literal for a given top-level field inside a D.fine({...}) call.
+-- fieldPattern is a Lua pattern matching the key (e.g., "%[D%.Extends%]").
 -- Handles nested braces correctly using line-by-line depth tracking.
-local function extractFieldBlock(source: string, fieldName: string): string?
+local function extractFieldBlock(source: string, fieldPattern: string): string?
 	local lines = {}
 	for line in source:gmatch("[^\r\n]+") do
 		table.insert(lines, line)
@@ -96,7 +97,7 @@ local function extractFieldBlock(source: string, fieldName: string): string?
 
 	for _, line in ipairs(lines) do
 		if not collecting then
-			if line:match("^%s*" .. fieldName .. "%s*=%s*{") then
+			if line:match("^%s*" .. fieldPattern .. "%s*=%s*{") then
 				collecting = true
 				depth = 0
 				for _ in line:gmatch("{") do
@@ -200,10 +201,10 @@ local function extractMethods(source: string): MethodBuckets
 	return { shared = shared, server = server, client = client }
 end
 
--- Parses the variable names listed in Extends = { VarA, VarB }
+-- Parses the variable names listed in [D.Extends] = { VarA, VarB }
 local function extractExtendsVarNames(block: string): { string }
 	local varNames: { string } = {}
-	local extendsBlock = extractFieldBlock(block, "Extends")
+	local extendsBlock = extractFieldBlock(block, "%[D%.Extends%]")
 	if not extendsBlock then
 		return varNames
 	end
@@ -333,15 +334,137 @@ local function extractRootPropertyLiteral(block: string): string
 	return #propLines > 0 and ("{\n" .. table.concat(propLines, "\n") .. "\n}") or "{}"
 end
 
+-- Counts net `{` minus `}` in a string. Naive (does not handle braces inside strings).
+local function netBraceDelta(s: string): number
+	local opens = 0
+	local closes = 0
+	for _ in s:gmatch("{") do opens += 1 end
+	for _ in s:gmatch("}") do closes += 1 end
+	return opens - closes
+end
+
+-- Maps a single-line value expression to its widened Luau type.
+-- Honors `expr :: SomeType` assertions by returning `SomeType`.
+local function widenScalarType(value: string): string
+	value = trim(value)
+	value = trim((value:gsub("[,;]%s*$", "")))
+
+	-- `expr :: Type` — take the rightmost assertion as the type.
+	local _, asserted = value:match("^(.+)::%s*(.+)$")
+	if asserted then
+		return trim(asserted)
+	end
+
+	local first = value:sub(1, 1)
+	if first == '"' or first == "'" or value:sub(1, 2) == "[[" or value:sub(1, 2) == "[=" then
+		return "string"
+	end
+
+	if value == "true" or value == "false" then
+		return "boolean"
+	end
+
+	if value:match("^%-?%d") or value:match("^%-?%.%d") then
+		return "number"
+	end
+
+	if value == "nil" then
+		return "nil"
+	end
+
+	return "any"
+end
+
+type LiteralEntry = { key: string, value: string, isTable: boolean }
+
+-- Parses depth-1 entries from a `{...}` literal. Values that are tables
+-- are returned as their raw `{...}` substring for recursion.
+local function parseTopLevelEntries(literal: string): { LiteralEntry }
+	local inner = literal:match("^%s*{(.*)}%s*$")
+	if not inner then
+		return {}
+	end
+
+	local lines: { string } = {}
+	for line in inner:gmatch("[^\r\n]+") do
+		table.insert(lines, line)
+	end
+
+	local entries: { LiteralEntry } = {}
+	local i = 1
+	while i <= #lines do
+		local line = lines[i]
+		local keyName, valueStart = line:match("^%s*([%a_][%w_]*)%s*=%s*(.*)$")
+
+		if not keyName then
+			i += 1
+			continue
+		end
+
+		local delta = netBraceDelta(valueStart)
+		if delta > 0 then
+			local collected: { string } = { valueStart }
+			local depth = delta
+			i += 1
+			while i <= #lines and depth > 0 do
+				local l = lines[i]
+				table.insert(collected, l)
+				depth += netBraceDelta(l)
+				i += 1
+			end
+			local raw = table.concat(collected, "\n")
+			local block = raw:match("(%b{})") or "{}"
+			table.insert(entries, { key = keyName, value = block, isTable = true })
+		else
+			local clean = trim((trim(valueStart):gsub("[,;]%s*$", "")))
+			if clean:sub(1, 1) == "{" and clean:sub(-1) == "}" then
+				table.insert(entries, { key = keyName, value = clean, isTable = true })
+			else
+				table.insert(entries, { key = keyName, value = clean, isTable = false })
+			end
+			i += 1
+		end
+	end
+
+	return entries
+end
+
+-- Converts a `{...}` literal into a Luau type literal at the given indent depth.
+-- Tables recurse; scalars use widenScalarType. Nested tables on a single line
+-- get reformatted onto multiple lines for readability.
+local function literalToTypeAt(literal: string, depth: number): string
+	local entries = parseTopLevelEntries(literal)
+	if #entries == 0 then
+		return "{}"
+	end
+
+	local outerIndent = string.rep("\t", depth)
+	local innerIndent = string.rep("\t", depth + 1)
+
+	local out: { string } = { "{" }
+	for _, entry in ipairs(entries) do
+		if entry.isTable then
+			local nested = literalToTypeAt(entry.value, depth + 1)
+			table.insert(out, innerIndent .. entry.key .. ": " .. nested .. ",")
+		else
+			table.insert(out, innerIndent .. entry.key .. ": " .. widenScalarType(entry.value) .. ",")
+		end
+	end
+	table.insert(out, outerIndent .. "}")
+	return table.concat(out, "\n")
+end
+
+local function literalToType(literal: string): string
+	return literalToTypeAt(literal, 0)
+end
+
 local function buildTypeBlock(rootName: string, fieldName: string, literal: string, extendsSuffix: string?): { string }
 	local aliasName = rootName .. fieldName
-	local typeExpr = "typeof(" .. aliasName .. ")"
+	local typeExpr = literalToType(literal)
 	if extendsSuffix and extendsSuffix ~= "" then
 		typeExpr ..= " & " .. extendsSuffix
 	end
 	return {
-		"local " .. aliasName .. " = " .. literal,
-		"",
 		"export type " .. aliasName .. " = " .. typeExpr,
 		"",
 	}
@@ -371,12 +494,9 @@ end
 local function buildConfigTypeBlock(rootName: string, buckets: MethodBuckets, propNames: { string }): { string }
 	local lines = {
 		"export type " .. rootName .. "Config = {",
-		"\tName: string,",
-		"\tContainer: Instance?,",
-		"\tExtends: { any }?,",
 	}
 	for _, propName in ipairs(propNames) do
-		table.insert(lines, "\t" .. propName .. ": any?,")
+		table.insert(lines, "\t" .. propName .. ": any,")
 	end
 
 	type ConfigMethod = { key: string, selfType: string, info: MethodInfo }
@@ -411,29 +531,25 @@ local function buildConfigTypeBlock(rootName: string, buckets: MethodBuckets, pr
 
 	for _, entry in ipairs(configMethods) do
 		local typedParams = buildTypedParams(entry.selfType, entry.info.params)
-		table.insert(lines, "\t" .. entry.key .. ": ((" .. typedParams .. ") -> " .. entry.info.returnType .. ")?,")
+		table.insert(lines, "\t" .. entry.key .. ": (" .. typedParams .. ") -> " .. entry.info.returnType .. ",")
 	end
 
+	table.insert(lines, "\t[string]: string | Instance | { any },")
 	table.insert(lines, "}")
 	table.insert(lines, "")
 	return lines
 end
 
 local function getContainerTypeName(block: string): string
-	-- Explicit: ContainerClassName = "Model"
-	local className = block:match("ContainerClassName%s*=%s*[\"']([%a_][%w_]*)[\"']")
-	if className and className ~= "" then
-		return className
-	end
-	-- Inline: Container = Instance.new("Model")
-	className = block:match("Container%s*=%s*Instance%.new%(%s*[\"']([%a_][%w_]*)[\"']%s*%)")
+	-- Inline: [D.Container] = Instance.new("Model")
+	local className = block:match("%[D%.Container%]%s*=%s*Instance%.new%(%s*[\"']([%a_][%w_]*)[\"']%s*%)")
 	return (className and className ~= "") and className or "Folder"
 end
 
 local function generateTypesForEntity(block: string, varToEntity: { [string]: string }): ({ string }?, string)
 	local rootName = getRootName(block)
 	if not rootName then
-		return nil, "Could not find `Name = '...'`"
+		return nil, "Could not find `[D.Name] = '...'`"
 	end
 
 	local propertiesLiteral = extractRootPropertyLiteral(block)
@@ -543,6 +659,52 @@ local function generateTypesForFile(inputPath: string): ({ string }?, string)
 	return allLines, table.concat(names, ", ")
 end
 
+local function buildDTypeLines(entityNames: { string }): { string }
+	local header: { string } = {
+		"export type D = {",
+		"\tNil: any,",
+		"\tName: string,",
+		"\tContainer: string,",
+		"\tExtends: string,",
+	}
+
+	if #entityNames == 0 then
+		table.insert(header, "}")
+		table.insert(header, "")
+		return header
+	end
+
+	-- Most-derived first: codegen visits parents before children, so reverse.
+	local ordered: { string } = {}
+	for i = #entityNames, 1, -1 do
+		table.insert(ordered, entityNames[i])
+	end
+
+	local function buildOverloadField(fieldName: string, returnFor: (string) -> string): { string }
+		local fieldLines = { "\t" .. fieldName .. ":" }
+		for i, name in ipairs(ordered) do
+			local prefix = i == 1 and "\t\t" or "\t\t& "
+			local suffix = i == #ordered and "," or ""
+			table.insert(fieldLines, prefix .. "((config: " .. name .. "Config) -> " .. returnFor(name) .. ")" .. suffix)
+		end
+		return fieldLines
+	end
+
+	for _, line in ipairs(buildOverloadField("fine", function(name) return name .. "Config" end)) do
+		table.insert(header, line)
+	end
+
+	for _, line in ipairs(buildOverloadField("new", function(name)
+		return name .. " & " .. name .. "Client & " .. name .. "Server"
+	end)) do
+		table.insert(header, line)
+	end
+
+	table.insert(header, "}")
+	table.insert(header, "")
+	return header
+end
+
 local function findLuauFiles(dir: string): { string }
 	local files: { string } = {}
 
@@ -579,6 +741,7 @@ local files = findLuauFiles(scriptsDir)
 table.sort(files)
 
 local allGeneratedLines: { string } = {}
+local allEntityNames: { string } = {}
 
 
 for _, inputPath in ipairs(files) do
@@ -595,10 +758,18 @@ for _, inputPath in ipairs(files) do
 			table.insert(allGeneratedLines, line)
 		end
 
+		for name in rootNameOrError:gmatch("[%a_][%w_]*") do
+			table.insert(allEntityNames, name)
+		end
+
 		print("Included " .. inputPath .. " (" .. rootNameOrError .. ")")
 	else
 		print("Skipped " .. inputPath .. ": " .. rootNameOrError)
 	end
+end
+
+for _, line in ipairs(buildDTypeLines(allEntityNames)) do
+	table.insert(allGeneratedLines, line)
 end
 
 local outputPath = "Defin.luau"
@@ -607,11 +778,11 @@ local existing = fs.readFile(outputPath)
 local beginMarker = "-- Begin Types"
 local endMarker = "-- End Types"
 
-local before = existing:match("^(.-" .. beginMarker .. "\n)")
-local after = existing:match(endMarker .. "(.*)")
+local before = existing:match("^(.-\n" .. beginMarker .. "\n)")
+local after = existing:match("\n" .. endMarker .. "(\n.*)$")
 
 if not before or not after then
-	error("Could not find '-- Begin Types' / '-- End Types' markers in " .. outputPath)
+	error("Could not find '-- Begin Types' / '-- End Types' markers (each on its own line) in " .. outputPath)
 end
 
 local generated = table.concat(allGeneratedLines, "\n")
