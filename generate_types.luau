@@ -3,22 +3,48 @@
 local fs = require("@lune/fs")
 
 local function getRootName(source: string): string?
-	local rootName = source:match("([%a_][%w_]*)%.Constants%s*=")
+	-- New pattern: Defin.Classes.X.Constants = or Defin.Components.X.Constants =
+	local rootName = source:match("Defin%.[%a_][%w_]*%.([%a_][%w_]*)%.Constants%s*=")
 	if rootName then
 		return rootName
 	end
 
-	return source:match("([%a_][%w_]*)%.Properties%s*=")
+	rootName = source:match("Defin%.[%a_][%w_]*%.([%a_][%w_]*)%.Properties%s*=")
+	if rootName then
+		return rootName
+	end
+
+	-- Fallback: legacy pattern X.Constants = or X.Properties =
+	rootName = source:match("([%a_][%w_]*)%.Constants%s*=")
+	if rootName and rootName ~= "Defin" then
+		return rootName
+	end
+
+	local fallback = source:match("([%a_][%w_]*)%.Properties%s*=")
+	if fallback and fallback ~= "Defin" then
+		return fallback
+	end
+
+	return nil
 end
 
 local function getLiteralForField(source: string, rootName: string, fieldName: string): string?
+	local newPattern = "Defin%.[%a_][%w_]*%." .. rootName .. "%." .. fieldName .. "%s*=%s*(%b{})"
+	local result = source:match(newPattern)
+	if result then
+		return result
+	end
 	local pattern = rootName .. "%." .. fieldName .. "%s*=%s*(%b{})"
 	return source:match(pattern)
 end
 
 local function getContainerTypeName(source: string, rootName: string): string
-	local pattern = rootName .. "%\.ContainerClassName%s*=%s*[\"']([%a_][%w_]*)[\"']"
-	local className = source:match(pattern)
+	local newPattern = "Defin%.[%a_][%w_]*%." .. rootName .. "%.ContainerClassName%s*=%s*[\"']([%a_][%w_]*)[\"']"
+	local className = source:match(newPattern)
+	if not className then
+		local pattern = rootName .. "%.ContainerClassName%s*=%s*[\"']([%a_][%w_]*)[\"']"
+		className = source:match(pattern)
+	end
 
 	if className and className ~= "" then
 		return className
@@ -34,8 +60,12 @@ end
 local function getExtendedComponentNames(source: string, rootName: string): { string }
 	local names = {}
 	local seen: { [string]: boolean } = {}
-	local pattern = rootName .. "%.Components%s*=%s*(%b{})"
-	local literal = source:match(pattern)
+	local newPattern = "Defin%.[%a_][%w_]*%." .. rootName .. "%.Components%s*=%s*(%b{})"
+	local literal = source:match(newPattern)
+	if not literal then
+		local pattern = rootName .. "%.Components%s*=%s*(%b{})"
+		literal = source:match(pattern)
+	end
 
 	if not literal then
 		return names
@@ -174,6 +204,11 @@ local function extractMethodSignatures(source: string, rootName: string): ({ [st
 			scopedRoot, methodName, params =
 				line:match("^%s*function%s+([%a_][%w_%.]*):([%a_][%w_]*)%s*%((.-)%)%s*$")
 			returnTypeText = nil
+		end
+
+		-- Normalize: strip Defin.Classes.X or Defin.Components.X prefix, keeping X.Rest
+		if scopedRoot then
+			scopedRoot = scopedRoot:match("^Defin%.[%a_][%w_]*%.(.+)$") or scopedRoot
 		end
 
 		if scopedRoot and methodName and params and (scopedRoot == rootName or startsWith(scopedRoot, rootName .. ".")) then
@@ -472,9 +507,6 @@ for _, inputPath in ipairs(classFiles) do
 end
 
 local allGeneratedLines = {
-	"--!strict",
-	"-- generated programmatically",
-	"",
 }
 
 local function appendGroup(groupTitle: string, groupFiles: { string })
@@ -511,9 +543,19 @@ end
 appendGroup("COMPONENTS", componentFiles)
 appendGroup("CLASSES", classFiles)
 
-table.insert(allGeneratedLines, "return nil")
-table.insert(allGeneratedLines, "")
+local outputPath = "Defin.luau"
+local existing = fs.readFile(outputPath)
 
-local outputPath = "Types.luau"
-fs.writeFile(outputPath, table.concat(allGeneratedLines, "\n"))
-print("Wrote " .. outputPath)
+local beginMarker = "-- Begin Types"
+local endMarker = "-- End Types"
+
+local before = existing:match("^(.-" .. beginMarker .. "\n)")
+local after = existing:match(endMarker .. "(.*)")
+
+if not before or not after then
+	error("Could not find '-- Begin Types' / '-- End Types' markers in " .. outputPath)
+end
+
+local generated = table.concat(allGeneratedLines, "\n")
+fs.writeFile(outputPath, before .. "\n" .. generated .. "\n" .. endMarker .. after)
+print("Wrote types into " .. outputPath)

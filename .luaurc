@@ -5,6 +5,6 @@
   },
   "aliases": {
     "defin": "./Defin.luau",
-    "types": "./Types.luau"
+    "defin2": "./Defin2.luau"
   }
 }

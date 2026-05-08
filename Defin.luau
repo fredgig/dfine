@@ -88,6 +88,44 @@ local tablesForModuleTypes			= {
 	Services = services,
 	Plugins = plugins
 }
+
+local function newClassTable()
+	return {
+		Server = { Changed = {}, Request = {}, Thread = {} },
+		Client = { Changed = {}, Replicate = {}, Thread = {} },
+		Components = {},
+		Constants = {},
+		Properties = {},
+		Changed = {},
+		Thread = {},
+		ContainerClassName = "Folder"
+	}
+end
+
+defin.Classes = setmetatable({}, {
+	__index = function(_, name)
+		if not classes[name] then
+			classes[name] = newClassTable()
+		end
+		return classes[name]
+	end,
+	__newindex = function(_, name, value)
+		classes[name] = value
+	end,
+})
+
+defin.Components = setmetatable({}, {
+	__index = function(_, name)
+		if not components[name] then
+			components[name] = newClassTable()
+		end
+		return components[name]
+	end,
+	__newindex = function(_, name, value)
+		components[name] = value
+	end,
+})
+
 local runService					= game:GetService("RunService")
 local collectionService 			= game:GetService("CollectionService")
 local replicatedStorage				= game:GetService("ReplicatedStorage")
@@ -647,12 +685,8 @@ definMetatable = {
 
 			changed = changeInstanceProperty(instance, index, newValue, false, false)
 
-			if changed and canReplicateInstance(instance) and not class.ServerProperties[index] then
-				if class.PlayerProperties[index] then
-					eventsFolder.InstancePropertyFunction:FireClient(defin:Unwrap(instance), instance["1"], index, newValue)
-				else
-					eventsFolder.InstancePropertyFunction:FireAllClients(instance["1"], index, newValue)
-				end
+			if changed and canReplicateInstance(instance) then
+				eventsFolder.InstancePropertyFunction:FireAllClients(instance["1"], index, newValue)
 			elseif isInstanceReplicationPaused(instance) then
 				queueInstanceReplicationUpdate(instance, {
 					1,
@@ -813,9 +847,6 @@ function setupModule(moduleName, moduleType, module)
 		module.ChangedFunctions = {}
 		module.DestroyedFunctions = {}
 
-		module.Properties.Server = module.Properties.Server or {}
-		module.Properties.Player = module.Properties.Player or {}
-
 		setupClassComponents(module)
 	
 		for _, componentName in pairs(module.Components) do
@@ -853,48 +884,24 @@ function setupModule(moduleName, moduleType, module)
 			end
 			
 			for index, value in pairs(component.Properties) do
-				if index ~= "Server" and index ~= "Player" then
-					if type(index) == "string" then
-						if module.Properties[index] == nil  then
-							if value == defin.Nil then
-								value = nil
-							end
-							module.Properties[index] = value
-						elseif type(value) == "table" and type(module.Properties[index]) == "table" then
-							if isArray(value) and isArray(module.Properties[index]) then
-								if not module.Properties[index] then
-									module.Properties[index] = value
-								end
-							else
-								for _index, _value in pairs(value) do
-									if module.Properties[index][_index] == nil then
-										module.Properties[index][_index] = _value
-									end
-								end
-							end
-						end
-					end
-				end
-			end
-
-			if type(component.Properties.Player) == "table" then
-				for index, value in pairs(component.Properties.Player) do
-					if type(index) == "string" and module.Properties.Player[index] == nil then
+				if type(index) == "string" then
+					if module.Properties[index] == nil  then
 						if value == defin.Nil then
 							value = nil
 						end
-						module.Properties.Player[index] = value
-					end
-				end
-			end
-
-			if type(component.Properties.Server) == "table" then
-				for index, value in pairs(component.Properties.Server) do
-					if type(index) == "string" and module.Properties.Server[index] == nil then
-						if value == defin.Nil then
-							value = nil
+						module.Properties[index] = value
+					elseif type(value) == "table" and type(module.Properties[index]) == "table" then
+						if isArray(value) and isArray(module.Properties[index]) then
+							if not module.Properties[index] then
+								module.Properties[index] = value
+							end
+						else
+							for _index, _value in pairs(value) do
+								if module.Properties[index][_index] == nil then
+									module.Properties[index][_index] = _value
+								end
+							end
 						end
-						module.Properties.Server[index] = value
 					end
 				end
 			end
@@ -971,8 +978,6 @@ function setupModule(moduleName, moduleType, module)
 		end
 	
 		module.PropertyIndexes = {}
-		module.ServerProperties = {}
-		module.PlayerProperties = {}
 		module.ConstantIndexes = {}
 	
 		local _index = 5
@@ -990,25 +995,8 @@ function setupModule(moduleName, moduleType, module)
 		_index = 5
 
 		for index, value in pairs(module.Properties) do
-			if index ~= "Server" and index ~= "Player" then
-				if type(index) == "string" then
-					module.PropertyIndexes[index] = tostring(_index)
-				else
-					error('Property index "' .. tostring(index) .. '" must be a string (' .. moduleName .. ')')
-				end
-				
-				_index = _index + 1
-			end
-		end
-
-		for index, value in pairs(module.Properties.Player) do
 			if type(index) == "string" then
-				if value == defin.Nil then
-					value = nil
-				end
 				module.PropertyIndexes[index] = tostring(_index)
-				module.Properties[index] = value
-				module.PlayerProperties[index] = true
 			else
 				error('Property index "' .. tostring(index) .. '" must be a string (' .. moduleName .. ')')
 			end
@@ -1016,25 +1004,6 @@ function setupModule(moduleName, moduleType, module)
 			_index = _index + 1
 		end
 
-		module.Properties.Player = nil
-
-		for index, value in pairs(module.Properties.Server) do
-			if type(index) == "string" then
-				if value == defin.Nil then
-					value = nil
-				end
-				module.PropertyIndexes[index] = tostring(_index)
-				module.Properties[index] = value
-				module.ServerProperties[index] = true
-			else
-				error('Property index "' .. tostring(index) .. '" must be a string (' .. moduleName .. ')')
-			end
-			
-			_index = _index + 1
-		end
-
-		module.Properties.Server = nil
-		
 		for index, value in pairs(module[context]) do
 			if type(value) == "function" then
 				module[index] = value
@@ -1324,7 +1293,7 @@ function initialize()
 						if definIndexes < modulesAmount then
 							definIndexes = definIndexes + 1
 							
-							return getDefin
+							return defin
 						else
 							endClient()
 						end
@@ -1388,7 +1357,7 @@ function initialize()
 		end
 	end
 
-	_G.Defin = getDefin
+	_G.Defin = defin
 	
 	-- Setup modules
 
@@ -1539,4 +1508,120 @@ end
 
 initialize()
 
-return getDefin
+-- Begin Types
+
+-- ========================================
+-- COMPONENTS
+-- ========================================
+
+-- ----------------------------------------
+-- Module: TestComponentA
+-- Source: scripts/Components/TestComponentA.luau
+-- ----------------------------------------
+
+local TestComponentAConstants = {
+	ComponentConstant1 = "Hello",
+	ComponentConstant2 = 123,
+	ComponentConstant3 = true,
+	ComponentConstant4 = {
+		Foo = "Bar",
+		Baz = 456,
+		Qux = false,
+	}
+}
+
+export type TestComponentAConstants = typeof(TestComponentAConstants)
+
+local TestComponentAProperties = {
+	ComponentProperty1 = "World",
+	ComponentProperty2 = 456,
+	ComponentProperty3 = false,
+	ComponentProperty4 = nil :: Player?
+}
+
+export type TestComponentAProperties = typeof(TestComponentAProperties)
+
+export type TestComponentAMethods = {
+	ComponentAMethod: ((self: TestComponentA, arg1: string, arg2: number) -> Player?),
+}
+
+export type TestComponentAClientMethods = {
+	ComponentAClientMethod: ((self: TestComponentAClient, arg1: string) -> any),
+	ComponentAMethod: ((self: TestComponentAClient, arg1: string, arg2: number) -> Player?),
+	Initialized: ((self: TestComponentAClient) -> any),
+	RequestComponentAServerMethod: ((self: TestComponentAClient) -> any),
+}
+
+export type TestComponentAServerMethods = {
+	ComponentAMethod: ((self: TestComponentAServer, arg1: string, arg2: number) -> Player?),
+	ComponentAServerMethod: ((self: TestComponentAServer, arg1: string, arg2: number) -> any),
+	Initialized: ((self: TestComponentAServer) -> any),
+	ReplicateComponentAClientMethod: ((self: TestComponentAServer, arg1: string) -> any),
+	ReplicatePlayerComponentAClientMethod: ((self: TestComponentAServer, player: Player, arg1: string) -> any),
+}
+
+export type TestComponentA = TestComponentAConstants & TestComponentAProperties & TestComponentAMethods & Folder
+
+export type TestComponentAClient = TestComponentA & TestComponentAClientMethods
+
+export type TestComponentAServer = TestComponentA & TestComponentAServerMethods
+
+-- ========================================
+-- CLASSES
+-- ========================================
+
+-- ----------------------------------------
+-- Module: TestClass
+-- Source: scripts/Classes/TestClass.luau
+-- ----------------------------------------
+
+local TestClassConstants = {
+	ClassConstant1 = "Hello",
+	ClassConstant2 = 123,
+	ClassConstant3 = true,
+	ClassConstant4 = {
+		Foo = "Bar",
+		Baz = 456,
+		Qux = false,
+	}
+}
+
+export type TestClassConstants = typeof(TestClassConstants) & TestComponentAConstants
+
+local TestClassProperties = {
+	ClassProperty1 = "World",
+	ClassProperty2 = 456,
+	ClassProperty3 = false,
+	ClassProperty4 = nil :: Player?
+}
+
+export type TestClassProperties = typeof(TestClassProperties) & TestComponentAProperties
+
+export type TestClassMethods = {
+	ClassMethod: ((self: TestClass, arg1: string, arg2: number) -> Player?),
+} & TestComponentAMethods
+
+export type TestClassClientMethods = {
+	ClassClientMethod: ((self: TestClassClient, arg1: string) -> any),
+	ClassMethod: ((self: TestClassClient, arg1: string, arg2: number) -> Player?),
+	Initialized: ((self: TestClassClient) -> any),
+	RequestClassServerMethod: ((self: TestClassClient) -> any),
+} & TestComponentAClientMethods
+
+export type TestClassServerMethods = {
+	ClassMethod: ((self: TestClassServer, arg1: string, arg2: number) -> Player?),
+	ClassServerMethod: ((self: TestClassServer, arg1: string, arg2: number) -> any),
+	Initialized: ((self: TestClassServer) -> any),
+	ReplicateClassClientMethod: ((self: TestClassServer, arg1: string) -> any),
+	ReplicatePlayerClassClientMethod: ((self: TestClassServer, player: Player, arg1: string) -> any),
+} & TestComponentAServerMethods
+
+export type TestClass = TestClassConstants & TestClassProperties & TestClassMethods & Model
+
+export type TestClassClient = TestClass & TestClassClientMethods
+
+export type TestClassServer = TestClass & TestClassServerMethods
+
+-- End Types
+
+return defin
