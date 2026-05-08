@@ -772,7 +772,7 @@ for _, line in ipairs(buildDTypeLines(allEntityNames)) do
 	table.insert(allGeneratedLines, line)
 end
 
-local outputPath = "Defin.luau"
+local outputPath = "Dfine.luau"
 local existing = fs.readFile(outputPath)
 
 local beginMarker = "-- Begin Types"

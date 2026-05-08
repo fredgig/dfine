@@ -1,5 +1,5 @@
 local Instance = require("@lune/roblox").Instance
-local D = require("@defin")
+local D = require("@dfine")
 
 local assert: (boolean, string?) -> () = assert :: any
 
