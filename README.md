@@ -23,6 +23,11 @@ This repo isn't the published framework; it's where the design and runtime are b
 local Vehicle = D.fine {
     [D.Name] = "Vehicle",
 
+    Color = "white",
+    TopSpeed = 60,
+    Wheels = 4,
+    Owner = D.Nil :: Player?,
+
     Honk = function(self): string
         return "Beep!"
     end,
@@ -33,9 +38,9 @@ local Car = D.fine {
     [D.Container] = Instance.new("Model"),
     [D.Extends] = { Vehicle },
 
+    -- Override two of Vehicle's defaults; Wheels and Owner are inherited as-is.
     Color = "red",
     TopSpeed = 120,
-    Owner = D.Nil :: Player?,
 
     Drive = function(self, distance: number): string
         return `drove {distance}m at {self.TopSpeed}km/h`
