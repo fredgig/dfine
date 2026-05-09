@@ -1,5 +1,3 @@
---!strict
-
 -- Vibecoded
 
 local fs = require("@lune/fs")
@@ -80,6 +78,55 @@ end
 
 local function getRootName(block: string): string?
 	return block:match("%[D%.Name%]%s*=%s*[\"']([%a_][%w_]*)[\"']")
+end
+
+type TypeDecl = { name: string, body: string }
+
+-- Captures top-level `type X = ...` (or `local type X = ...`) declarations so
+-- they can be hoisted into the generated Dfine.luau alongside entity types.
+-- Single-line bodies are taken as-is. Multi-line bodies are supported when
+-- they open `{` or `(` that closes on a later line.
+local function extractTypeDeclarations(source: string): { TypeDecl }
+	local lines: { string } = {}
+	for line in source:gmatch("[^\r\n]+") do
+		table.insert(lines, line)
+	end
+
+	local decls: { TypeDecl } = {}
+	local i = 1
+	while i <= #lines do
+		local line = lines[i]
+		local name, bodyStart = line:match("^%s*type%s+([%a_][%w_]*)%s*=%s*(.*)$")
+		if not name then
+			name, bodyStart = line:match("^%s*local%s+type%s+([%a_][%w_]*)%s*=%s*(.*)$")
+		end
+
+		if name then
+			local opens, closes = 0, 0
+			for _ in bodyStart:gmatch("[{(]") do opens += 1 end
+			for _ in bodyStart:gmatch("[)}]") do closes += 1 end
+			local depth = opens - closes
+
+			local collected: { string } = { bodyStart }
+			i += 1
+			while i <= #lines and depth > 0 do
+				local l = lines[i]
+				table.insert(collected, l)
+				for _ in l:gmatch("[{(]") do depth += 1 end
+				for _ in l:gmatch("[)}]") do depth -= 1 end
+				i += 1
+			end
+
+			local body = trim(table.concat(collected, "\n"))
+			if body ~= "" then
+				table.insert(decls, { name = name, body = body })
+			end
+		else
+			i += 1
+		end
+	end
+
+	return decls
 end
 
 -- Extracts the { ... } literal for a given top-level field inside a D.fine({...}) call.
@@ -743,6 +790,37 @@ table.sort(files)
 local allGeneratedLines: { string } = {}
 local allEntityNames: { string } = {}
 
+-- Hoist user `type X = ...` declarations from spec files so type assertions
+-- like `:: AmphibiousCarMode` resolve when the generator references them
+-- inside Dfine.luau. Same name from multiple files: first wins, others warn.
+local hoistedTypeLines: { string } = {}
+local seenTypes: { [string]: { body: string, source: string } } = {}
+
+for _, inputPath in ipairs(files) do
+	local source = fs.readFile(inputPath)
+	for _, decl in ipairs(extractTypeDeclarations(source)) do
+		local existing = seenTypes[decl.name]
+		if existing then
+			if existing.body ~= decl.body then
+				print(`  Warning: type "{decl.name}" redeclared in {inputPath}; keeping definition from {existing.source}`)
+			end
+		else
+			seenTypes[decl.name] = { body = decl.body, source = inputPath }
+			table.insert(hoistedTypeLines, "export type " .. decl.name .. " = " .. decl.body)
+			table.insert(hoistedTypeLines, "")
+		end
+	end
+end
+
+if #hoistedTypeLines > 0 then
+	table.insert(allGeneratedLines, "-- ----------------------------------------")
+	table.insert(allGeneratedLines, "-- User type aliases (hoisted from spec files)")
+	table.insert(allGeneratedLines, "-- ----------------------------------------")
+	table.insert(allGeneratedLines, "")
+	for _, line in ipairs(hoistedTypeLines) do
+		table.insert(allGeneratedLines, line)
+	end
+end
 
 for _, inputPath in ipairs(files) do
 	local generatedLines, rootNameOrError = generateTypesForFile(inputPath)

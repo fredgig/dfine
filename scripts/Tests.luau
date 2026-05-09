@@ -40,6 +40,10 @@ local Car = D.fine {
 		return `drove {distance}m at {self.TopSpeed}km/h`
 	end,
 
+	Stop = function(self): string
+		return "brakes engaged"
+	end,
+
 	Server_Refuel = function(self): string
 		return "tank full"
 	end,
@@ -94,6 +98,12 @@ local Boat = D.fine {
 		return `sailed {distance}m at {self.TopSpeed}km/h`
 	end,
 
+	-- Same name as Car.Stop, different body — used to verify which parent wins
+	-- when AmphibiousCar pulls in both surfaces.
+	Stop = function(self): string
+		return "engines cut"
+	end,
+
 	Server_DropAnchor = function(self): string
 		return "anchor down"
 	end,
@@ -102,12 +112,17 @@ local Boat = D.fine {
 -- AmphibiousCar drives on land and sails on water. It pulls in both surfaces'
 -- methods. When Car and Boat declare the same property (Color, TopSpeed, etc.)
 -- the *first* parent in [D.Extends] wins — here Car beats Boat for overlap.
+
+type AmphibiousCarMode = "land" | "water"
+
 local AmphibiousCar = D.fine {
 	[D.Name] = "AmphibiousCar",
 	[D.Container] = Instance.new("Model"),
 	[D.Extends] = { Car, Boat },
 
-	SwitchMode = function(self, mode: string): string
+	Mode = "land" :: AmphibiousCarMode,
+
+	SwitchMode = function(self, mode: AmphibiousCarMode): string
 		return `switched to {mode} mode`
 	end,
 }
@@ -147,6 +162,7 @@ assert(car:Drive(50) == "drove 50m at 120km/h", `Car:Drive(50): got {car:Drive(5
 assert(car:Honk() == "Beep!", `Car:Honk() inherited: got {car:Honk()}`)
 assert(car:Refuel() == "tank full", `Car:Refuel() via Server_ prefix: got {car:Refuel()}`)
 assert(car:PlayHorn() == "Beep!", `Car:PlayHorn() → inherited Honk: got {car:PlayHorn()}`)
+assert(car:Stop() == "brakes engaged", `Car:Stop(): got {car:Stop()}`)
 
 -- ---------------------------------------------------------------------------
 -- Car — property writes
@@ -279,6 +295,7 @@ assert(boat.Owner == nil, `Boat.Owner inherited via D.Nil: got {boat.Owner}`)
 assert(boat:Sail(20) == "sailed 20m at 40km/h", `Boat:Sail(20): got {boat:Sail(20)}`)
 assert(boat:Honk() == "Beep!", `Boat:Honk() inherited: got {boat:Honk()}`)
 assert(boat:DropAnchor() == "anchor down", `Boat:DropAnchor() via Server_ prefix: got {boat:DropAnchor()}`)
+assert(boat:Stop() == "engines cut", `Boat:Stop(): got {boat:Stop()}`)
 
 -- Boat does not inherit Car's surface
 local boatNoDrive = pcall(function() return (boat :: any):Drive(1) end)
@@ -315,6 +332,12 @@ assert(amph:PlayHorn() == "Beep!", `AmphibiousCar:PlayHorn() (Car) → Honk: got
 -- Methods from Boat
 assert(amph:Sail(15) == "sailed 15m at 120km/h", `AmphibiousCar:Sail(15) at Car's TopSpeed: got {amph:Sail(15)}`)
 assert(amph:DropAnchor() == "anchor down", `AmphibiousCar:DropAnchor() (Boat): got {amph:DropAnchor()}`)
+
+-- Method overlap: both Car and Boat declare Stop with different bodies.
+-- Car appears first in [D.Extends], so Car's "brakes engaged" wins over
+-- Boat's "engines cut".
+
+assert(amph:Stop() == "brakes engaged", `AmphibiousCar:Stop() (Car wins over Boat): got {amph:Stop()}`)
 
 -- Method from Vehicle (deepest ancestor)
 assert(amph:Honk() == "Beep!", `AmphibiousCar:Honk() (Vehicle): got {amph:Honk()}`)

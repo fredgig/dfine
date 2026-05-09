@@ -134,6 +134,12 @@ local D = {
 -- Begin Types
 
 -- ----------------------------------------
+-- User type aliases (hoisted from spec files)
+-- ----------------------------------------
+
+export type AmphibiousCarMode = "land" | "water"
+
+-- ----------------------------------------
 -- Module: Vehicle, Car, Motorcycle, SportsCar, Boat, AmphibiousCar
 -- Source: scripts/Tests.luau
 -- ----------------------------------------
@@ -177,6 +183,7 @@ export type CarProperties = {
 
 export type CarMethods = {
 	Drive: (self: Car, distance: number) -> string,
+	Stop: (self: Car) -> string,
 } & VehicleMethods
 
 export type CarClientMethods = {
@@ -197,6 +204,7 @@ export type CarConfig = {
 	Color: any,
 	TopSpeed: any,
 	Drive: (self: Car, distance: number) -> string,
+	Stop: (self: Car) -> string,
 	Server_Refuel: (self: CarServer) -> string,
 	Client_PlayHorn: (self: CarClient) -> string,
 	[string]: string | Instance | { any },
@@ -269,6 +277,7 @@ export type BoatProperties = {
 
 export type BoatMethods = {
 	Sail: (self: Boat, distance: number) -> string,
+	Stop: (self: Boat) -> string,
 } & VehicleMethods
 
 export type BoatClientMethods = {
@@ -290,14 +299,17 @@ export type BoatConfig = {
 	TopSpeed: any,
 	HasHull: any,
 	Sail: (self: Boat, distance: number) -> string,
+	Stop: (self: Boat) -> string,
 	Server_DropAnchor: (self: BoatServer) -> string,
 	[string]: string | Instance | { any },
 }
 
-export type AmphibiousCarProperties = {} & CarProperties & BoatProperties
+export type AmphibiousCarProperties = {
+	Mode: AmphibiousCarMode,
+} & CarProperties & BoatProperties
 
 export type AmphibiousCarMethods = {
-	SwitchMode: (self: AmphibiousCar, mode: string) -> string,
+	SwitchMode: (self: AmphibiousCar, mode: AmphibiousCarMode) -> string,
 } & CarMethods & BoatMethods
 
 export type AmphibiousCarClientMethods = {
@@ -313,7 +325,8 @@ export type AmphibiousCarClient = AmphibiousCar & AmphibiousCarClientMethods
 export type AmphibiousCarServer = AmphibiousCar & AmphibiousCarServerMethods
 
 export type AmphibiousCarConfig = {
-	SwitchMode: (self: AmphibiousCar, mode: string) -> string,
+	Mode: any,
+	SwitchMode: (self: AmphibiousCar, mode: AmphibiousCarMode) -> string,
 	[string]: string | Instance | { any },
 }
 
