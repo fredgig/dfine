@@ -134,96 +134,186 @@ local D = {
 -- Begin Types
 
 -- ----------------------------------------
--- Module: Entity0, Entity1, Entity2
+-- Module: Vehicle, Car, Motorcycle, SportsCar, Boat, AmphibiousCar
 -- Source: scripts/Tests.luau
 -- ----------------------------------------
 
-export type Entity0Properties = {}
-
-export type Entity0Methods = {
+export type VehicleProperties = {
+	Color: string,
+	TopSpeed: number,
+	Wheels: number,
+	Owner: Player?,
 }
 
-export type Entity0ClientMethods = {
-	SomeDeepClientMethod: (self: Entity0Client) -> string,
+export type VehicleMethods = {
+	Honk: (self: Vehicle) -> string,
 }
 
-export type Entity0ServerMethods = {
+export type VehicleClientMethods = {
 }
 
-export type Entity0 = Entity0Properties & Entity0Methods & Folder
+export type VehicleServerMethods = {
+}
 
-export type Entity0Client = Entity0 & Entity0ClientMethods
+export type Vehicle = VehicleProperties & VehicleMethods & Folder
 
-export type Entity0Server = Entity0 & Entity0ServerMethods
+export type VehicleClient = Vehicle & VehicleClientMethods
 
-export type Entity0Config = {
-	Client_SomeDeepClientMethod: (self: Entity0Client) -> string,
+export type VehicleServer = Vehicle & VehicleServerMethods
+
+export type VehicleConfig = {
+	Color: any,
+	TopSpeed: any,
+	Wheels: any,
+	Owner: any,
+	Honk: (self: Vehicle) -> string,
 	[string]: string | Instance | { any },
 }
 
-export type Entity1Properties = {
-	Property5: Player?,
-	Property6: string,
-} & Entity0Properties
+export type CarProperties = {
+	Color: string,
+	TopSpeed: number,
+} & VehicleProperties
 
-export type Entity1Methods = {
-} & Entity0Methods
+export type CarMethods = {
+	Drive: (self: Car, distance: number) -> string,
+} & VehicleMethods
 
-export type Entity1ClientMethods = {
-} & Entity0ClientMethods
+export type CarClientMethods = {
+	PlayHorn: (self: CarClient) -> string,
+} & VehicleClientMethods
 
-export type Entity1ServerMethods = {
-} & Entity0ServerMethods
+export type CarServerMethods = {
+	Refuel: (self: CarServer) -> string,
+} & VehicleServerMethods
 
-export type Entity1 = Entity1Properties & Entity1Methods & Folder
+export type Car = CarProperties & CarMethods & Model
 
-export type Entity1Client = Entity1 & Entity1ClientMethods
+export type CarClient = Car & CarClientMethods
 
-export type Entity1Server = Entity1 & Entity1ServerMethods
+export type CarServer = Car & CarServerMethods
 
-export type Entity1Config = {
-	Property5: any,
-	Property6: any,
+export type CarConfig = {
+	Color: any,
+	TopSpeed: any,
+	Drive: (self: Car, distance: number) -> string,
+	Server_Refuel: (self: CarServer) -> string,
+	Client_PlayHorn: (self: CarClient) -> string,
 	[string]: string | Instance | { any },
 }
 
-export type Entity2Properties = {
-	Property1: string,
-	Property2: number,
-	Property3: boolean,
-	Property4: {
-		Foo: string,
-		Baz: number,
-		Qux: boolean,
-	},
-} & Entity1Properties
+export type MotorcycleProperties = {
+	Wheels: number,
+	TopSpeed: number,
+} & VehicleProperties
 
-export type Entity2Methods = {
-	SomeMethod: (self: Entity2, arg1: number, arg2: string) -> string,
-} & Entity1Methods
+export type MotorcycleMethods = {
+	Wheelie: (self: Motorcycle) -> string,
+} & VehicleMethods
 
-export type Entity2ClientMethods = {
-	SomeClientMethod: (self: Entity2Client) -> (),
-} & Entity1ClientMethods
+export type MotorcycleClientMethods = {
+} & VehicleClientMethods
 
-export type Entity2ServerMethods = {
-	SomeServerMethod: (self: Entity2Server) -> (),
-} & Entity1ServerMethods
+export type MotorcycleServerMethods = {
+} & VehicleServerMethods
 
-export type Entity2 = Entity2Properties & Entity2Methods & Model
+export type Motorcycle = MotorcycleProperties & MotorcycleMethods & Model
 
-export type Entity2Client = Entity2 & Entity2ClientMethods
+export type MotorcycleClient = Motorcycle & MotorcycleClientMethods
 
-export type Entity2Server = Entity2 & Entity2ServerMethods
+export type MotorcycleServer = Motorcycle & MotorcycleServerMethods
 
-export type Entity2Config = {
-	Property1: any,
-	Property2: any,
-	Property3: any,
-	Property4: any,
-	SomeMethod: (self: Entity2, arg1: number, arg2: string) -> string,
-	Server_SomeServerMethod: (self: Entity2Server) -> (),
-	Client_SomeClientMethod: (self: Entity2Client) -> (),
+export type MotorcycleConfig = {
+	Wheels: any,
+	TopSpeed: any,
+	Wheelie: (self: Motorcycle) -> string,
+	[string]: string | Instance | { any },
+}
+
+export type SportsCarProperties = {
+	Color: string,
+	TopSpeed: number,
+} & CarProperties
+
+export type SportsCarMethods = {
+	Boost: (self: SportsCar) -> string,
+	Drive: (self: SportsCar, distance: number) -> string,
+} & CarMethods
+
+export type SportsCarClientMethods = {
+} & CarClientMethods
+
+export type SportsCarServerMethods = {
+} & CarServerMethods
+
+export type SportsCar = SportsCarProperties & SportsCarMethods & Model
+
+export type SportsCarClient = SportsCar & SportsCarClientMethods
+
+export type SportsCarServer = SportsCar & SportsCarServerMethods
+
+export type SportsCarConfig = {
+	Color: any,
+	TopSpeed: any,
+	Boost: (self: SportsCar) -> string,
+	Drive: (self: SportsCar, distance: number) -> string,
+	[string]: string | Instance | { any },
+}
+
+export type BoatProperties = {
+	Color: string,
+	Wheels: number,
+	TopSpeed: number,
+	HasHull: boolean,
+} & VehicleProperties
+
+export type BoatMethods = {
+	Sail: (self: Boat, distance: number) -> string,
+} & VehicleMethods
+
+export type BoatClientMethods = {
+} & VehicleClientMethods
+
+export type BoatServerMethods = {
+	DropAnchor: (self: BoatServer) -> string,
+} & VehicleServerMethods
+
+export type Boat = BoatProperties & BoatMethods & Model
+
+export type BoatClient = Boat & BoatClientMethods
+
+export type BoatServer = Boat & BoatServerMethods
+
+export type BoatConfig = {
+	Color: any,
+	Wheels: any,
+	TopSpeed: any,
+	HasHull: any,
+	Sail: (self: Boat, distance: number) -> string,
+	Server_DropAnchor: (self: BoatServer) -> string,
+	[string]: string | Instance | { any },
+}
+
+export type AmphibiousCarProperties = {} & CarProperties & BoatProperties
+
+export type AmphibiousCarMethods = {
+	SwitchMode: (self: AmphibiousCar, mode: string) -> string,
+} & CarMethods & BoatMethods
+
+export type AmphibiousCarClientMethods = {
+} & CarClientMethods & BoatClientMethods
+
+export type AmphibiousCarServerMethods = {
+} & CarServerMethods & BoatServerMethods
+
+export type AmphibiousCar = AmphibiousCarProperties & AmphibiousCarMethods & Model
+
+export type AmphibiousCarClient = AmphibiousCar & AmphibiousCarClientMethods
+
+export type AmphibiousCarServer = AmphibiousCar & AmphibiousCarServerMethods
+
+export type AmphibiousCarConfig = {
+	SwitchMode: (self: AmphibiousCar, mode: string) -> string,
 	[string]: string | Instance | { any },
 }
 
@@ -233,13 +323,19 @@ export type D = {
 	Container: string,
 	Extends: string,
 	fine:
-		((config: Entity2Config) -> Entity2Config)
-		& ((config: Entity1Config) -> Entity1Config)
-		& ((config: Entity0Config) -> Entity0Config),
+		((config: AmphibiousCarConfig) -> AmphibiousCarConfig)
+		& ((config: BoatConfig) -> BoatConfig)
+		& ((config: SportsCarConfig) -> SportsCarConfig)
+		& ((config: MotorcycleConfig) -> MotorcycleConfig)
+		& ((config: CarConfig) -> CarConfig)
+		& ((config: VehicleConfig) -> VehicleConfig),
 	new:
-		((config: Entity2Config) -> Entity2 & Entity2Client & Entity2Server)
-		& ((config: Entity1Config) -> Entity1 & Entity1Client & Entity1Server)
-		& ((config: Entity0Config) -> Entity0 & Entity0Client & Entity0Server),
+		((config: AmphibiousCarConfig) -> AmphibiousCar & AmphibiousCarClient & AmphibiousCarServer)
+		& ((config: BoatConfig) -> Boat & BoatClient & BoatServer)
+		& ((config: SportsCarConfig) -> SportsCar & SportsCarClient & SportsCarServer)
+		& ((config: MotorcycleConfig) -> Motorcycle & MotorcycleClient & MotorcycleServer)
+		& ((config: CarConfig) -> Car & CarClient & CarServer)
+		& ((config: VehicleConfig) -> Vehicle & VehicleClient & VehicleServer),
 }
 
 -- End Types
